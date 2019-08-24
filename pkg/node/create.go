@@ -3,9 +3,10 @@ package node
 import (
 	"fmt"
 
+	"github.com/medyagh/kic/pkg/command"
 	"github.com/medyagh/kic/pkg/config/cri"
-	"github.com/medyagh/kic/pkg/exec"
 	"github.com/medyagh/kic/pkg/oci"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 	NodeRoleKey     = "io.k8s.sigs.kic.role"
 )
 
-func CreateNode(name, image, clusterLabel, role string, mounts []cri.Mount, portMappings []cri.PortMapping, cmder exec.Cmder, extraArgs ...string) (*Node, error) {
+func CreateNode(name, image, clusterLabel, role string, mounts []cri.Mount, portMappings []cri.PortMapping, localRunner command.Runner, extraArgs ...string) (*Node, error) {
 	runArgs := []string{
 		"-d", // run the container detached
 		"-t", // allocate a tty for entrypoint logs
@@ -59,7 +60,10 @@ func CreateNode(name, image, clusterLabel, role string, mounts []cri.Mount, port
 		runArgs = append(runArgs, "--userns=host")
 	}
 
+	// TODO: MEDYA
+
 	_, err = oci.CreateContainer(
+		localRunner,
 		image,
 		oci.WithRunArgs(runArgs...),
 		oci.WithMounts(mounts),
@@ -68,43 +72,9 @@ func CreateNode(name, image, clusterLabel, role string, mounts []cri.Mount, port
 
 	// we should return a handle so the caller can clean it up
 	node := FromName(name)
-	node.cmder = cmder
 	if err != nil {
-		return node, fmt.Errorf("docker run error %v", err)
+		return node, errors.Wrap(err, "CreateNode error")
 	}
 
 	return node, nil
-}
-
-// CreateControlPlaneNode creates a contol-plane node
-// and gets ready for exposing the the API server
-func CreateControlPlaneNode(name, image, clusterLabel, listenAddress string, port int32, mounts []cri.Mount, portMappings []cri.PortMapping, cmder exec.Cmder) (node *Node, err error) {
-	// add api server port mapping
-	portMappingsWithAPIServer := append(portMappings, cri.PortMapping{
-		ListenAddress: listenAddress,
-		HostPort:      port,
-		ContainerPort: 6443,
-	})
-	node, err = CreateNode(
-		name, image, clusterLabel, "control-plane", mounts, portMappingsWithAPIServer, cmder,
-		// publish selected port for the API server
-		"--expose", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		return node, err
-	}
-
-	// stores the port mapping into the node internal state
-	node.cache.set(func(cache *nodeCache) {
-		cache.ports = map[int32]int32{6443: port}
-	})
-	return node, nil
-}
-
-// FromName creates a node handle from the node' Name
-func FromName(name string) *Node {
-	return &Node{
-		name:  name,
-		cache: &nodeCache{},
-	}
 }

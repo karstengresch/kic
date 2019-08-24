@@ -1,40 +1,44 @@
 package kube
 
 import (
+	"strings"
+
 	"github.com/pkg/errors"
 
-	"github.com/medyagh/kic/pkg/exec"
-	"github.com/medyagh/kic/pkg/node"
+	"github.com/medyagh/kic/pkg/command"
 )
 
 /// RunKubeadmInit runs kubeadm init on a node
-func RunKubeadmInit(node *node.Node, kubeadmCfgPath string, hostIP string, hostPort int32, profile string) ([]string, error) { // run kubeadm
-	cmd := node.Command(
+func RunKubeadmInit(nodeRunner command.Runner, kubeadmCfgPath string, hostIP string, hostPort int32, profile string) (string, error) { // run kubeadm
+	args := []string{
 		// init because this is the control plane node
 		"kubeadm", "init",
 		"--ignore-preflight-errors=all",
 		// specify our generated config file
-		"--config="+kubeadmCfgPath,
+		"--config=" + kubeadmCfgPath,
 		"--skip-token-print",
 		// increase verbosity for debugging
 		"--v=6",
-	)
-	lines, err := exec.CombinedOutputLines(cmd)
-	if err != nil {
-		return lines, errors.Wrap(err, "failed to init node with kubeadm")
 	}
 
-	return lines, nil
+	out, err := nodeRunner.CombinedOutput(strings.Join(args, " "))
+	if err != nil {
+		return out, errors.Wrapf(err, "failed to init node with kubeadm")
+	}
+	return out, nil
 }
 
-func RunTaint(n *node.Node) error {
-	// if we are only provisioning one node, remove the master taint
-	// https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/#master-isolation
-	if err := n.Command(
-		"kubectl", "--kubeconfig=/etc/kubernetes/admin.conf",
+// if we are only provisioning one node, remove the master taint
+// https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/#master-isolation
+func RunTaint(nodeRunner command.Runner) error {
+	args := []string{
+		"kubectl", // kubectl inside the host
+		"--kubeconfig=/etc/kubernetes/admin.conf",
 		"taint", "nodes", "--all", "node-role.kubernetes.io/master-",
-	).Run(); err != nil {
-		return errors.Wrap(err, "failed to remove master taint")
+	}
+	out, err := nodeRunner.CombinedOutput(strings.Join(args, " "))
+	if err != nil {
+		return errors.Wrapf(err, "failed to remove master taint. output: %s", out)
 	}
 	return nil
 }

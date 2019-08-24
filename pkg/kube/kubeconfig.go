@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io/ioutil"
@@ -8,34 +9,39 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
-	"github.com/medyagh/kic/pkg/exec"
-	"github.com/medyagh/kic/pkg/node"
+	"github.com/medyagh/kic/pkg/command"
 	"github.com/pkg/errors"
 	"k8s.io/client-go/util/homedir"
 )
 
 // rename generate based on /etc/...
-func GenerateKubeConfig(n *node.Node, hostIP string, hostPort int32, profile string) ([]byte, error) {
-	cmd := n.Command("cat", "/etc/kubernetes/admin.conf")
-	lines, err := exec.CombinedOutputLines(cmd)
+func GenerateKubeConfig(nodeRunner command.Runner, hostIP string, hostPort int32, profile string) ([]byte, error) {
+	args := []string{
+		// init because this is the control plane node
+		"cat", "/etc/kubernetes/admin.conf",
+	}
+
+	var buffContainer bytes.Buffer // buffer to read config inside container
+	var buffUser bytes.Buffer      // buffer to hold info generated kubeconfig to be used by user
+	err := nodeRunner.CombinedOutputTo(strings.Join(args, " "), &buffContainer)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get kubeconfig from node")
 	}
 
-	// fix the config file, swapping out the server for the forwarded localhost:port
-	var buff bytes.Buffer
-	for _, line := range lines {
+	scanner := bufio.NewScanner(&buffContainer)
+	for scanner.Scan() {
+		line := scanner.Text()
 		match := serverAddressRE.FindStringSubmatch(line)
-		if len(match) > 1 {
+		if len(match) > 1 { // replace the ip from the config inside the container.
 			addr := net.JoinHostPort(hostIP, fmt.Sprintf("%d", hostPort))
 			line = fmt.Sprintf("%s https://%s", match[1], addr)
 		}
-		buff.WriteString(line)
-		buff.WriteString("\n")
+		buffUser.WriteString(line)
+		buffUser.WriteString("\n")
 	}
-
-	return buff.Bytes(), nil
+	return buffUser.Bytes(), nil
 }
 
 func WriteKubeConfig(content []byte, profile string) error {

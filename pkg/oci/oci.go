@@ -1,27 +1,41 @@
 package oci
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff"
+	"github.com/medyagh/kic/pkg/command"
 	"github.com/medyagh/kic/pkg/config/cri"
-	"github.com/medyagh/kic/pkg/exec"
+	"github.com/pkg/errors"
+	"sigs.k8s.io/kind/pkg/exec"
 )
 
 // can be podman
 const DefaultOCI = "docker"
 
 // Inspect return low-level information on containers
-func Inspect(containerNameOrID, format string) ([]string, error) {
-	cmd := exec.Command(DefaultOCI, "inspect",
-		"-f", format,
-		containerNameOrID, // ... against the "node" container
-	)
+func Inspect(localRunner command.Runner, containerNameOrID, format string) ([]string, error) {
+	args := []string{
+		"inspect", "-f", format, containerNameOrID,
+	}
 
-	return exec.CombinedOutputLines(cmd)
+	var b bytes.Buffer
+	err := localRunner.CombinedOutputTo(strings.Join(args, " "), &b)
+	lines := []string{}
+	scanner := bufio.NewScanner(&b)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err != nil {
+		return lines, errors.Wrapf(err, "Inspect container %s output: %v", containerNameOrID, lines)
+	}
+
+	return lines, nil
 }
 
 // NetworkInspect displays detailed information on one or more networks

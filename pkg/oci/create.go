@@ -1,8 +1,11 @@
 package oci
 
 import (
+	"os/exec"
+	"github.com/pkg/errors"
+
+	"github.com/medyagh/kic/pkg/command"
 	"github.com/medyagh/kic/pkg/config/cri"
-	"github.com/medyagh/kic/pkg/exec"
 )
 
 // CreateOpt is an option for Create
@@ -17,7 +20,7 @@ type createOpts struct {
 }
 
 // CreateContainer creates a container with "docker/podman run"
-func CreateContainer(image string, opts ...CreateOpt) ([]string, error) {
+func CreateContainer(localRunner command.Runner, image string, opts ...CreateOpt) (string, error) {
 	o := &createOpts{}
 	for _, opt := range opts {
 		o = opt(o)
@@ -36,11 +39,14 @@ func CreateContainer(image string, opts ...CreateOpt) ([]string, error) {
 	args = append(args, image)
 	args = append(args, o.ContainerArgs...)
 	cmd := exec.Command(DefaultOCI, args...)
-	output, err := exec.CombinedOutputLines(cmd)
+	err := cmd.Run()
 	if err != nil {
-		return output, err
+		return "", errors.Wrapf(err, "CreateContainer")
 	}
-	return output, nil
+
+	return "", nil
+
+	// return localRunner.CombinedOutput(strings.Join(runArgs, " "))
 }
 
 // WithRunArgs sets the args for docker run
