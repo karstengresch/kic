@@ -3,10 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"time"
 
-	"github.com/medyagh/kic/example/single_node/mycmder"
+	"github.com/medyagh/kic/example/single_node/myrunner"
 	"github.com/medyagh/kic/pkg/config/cri"
 	"github.com/medyagh/kic/pkg/image"
 	"github.com/medyagh/kic/pkg/kube"
@@ -22,23 +21,27 @@ func main() {
 	start := flag.Bool("start", false, "to start")
 	hostIP := flag.String("host-ip", "127.0.0.1", "node's ip")
 	kubeVersion := flag.String("kubernetes-version", "v1.15.0", "kuberentes version")
-
 	flag.Parse()
-	p, err := freeport.GetFreePort()
-	hostPort := int32(p)
-	if err != nil {
-		log.Fatal(err)
-	}
 
+	// Gets the base image to use for the nodes
 	imgSha, _ := image.NameForVersion(*kubeVersion)
 
-	ns := newNodeSpec(*profile, imgSha, *hostIP, hostPort)
+	hostPort := freePort()
 
-	if *delete {
-		fmt.Printf("Deleting ... %s\n", *profile)
-		ns.Delete()
-
+	id := *profile + "control-plane"
+	ns := &node.Spec{
+		Profile:           *profile,
+		Name:              id,
+		Image:             imgSha,
+		Role:              "control-plane",
+		ExtraMounts:       []cri.Mount{},
+		ExtraPortMappings: []cri.PortMapping{},
+		APIServerAddress:  *hostIP,
+		APIServerPort:     hostPort,
+		IPv6:              false,
 	}
+	localRunner := myrunner.NewLocalRunner("docker")
+	nodeRunner := myrunner.NewNodeRunner(id)
 
 	if *start {
 		fmt.Printf("Starting on port %d\n ", hostPort)
@@ -47,10 +50,15 @@ func main() {
 			klog.Errorf("Error pulling image %s", imgSha)
 		}
 
-		// create node
-		node, _ := ns.Create(mycmder.New(ns.Name))
+		node, err := ns.Create(localRunner)
+		if err != nil {
+			klog.Fatalf("Fail: to create node spec: %v", err)
+		}
 
-		ip, _, _ := node.IP()
+		ip, _, err := node.IP(localRunner)
+		if err != nil {
+			klog.Fatalf("Fail: to get ip: %v ", err)
+		}
 
 		cfg := kube.ConfigData{
 			ClusterName:          *profile,
@@ -65,34 +73,41 @@ func main() {
 			IPv6:                 false,
 		}
 
-		kCfg, _ := kube.KubeAdmCfg(cfg)
+		kCfg, err := kube.KubeAdmCfg(cfg)
+		if err != nil {
+			klog.Fatalf("Fail: to generate kube adm config content: %v ", err)
+		}
+
 		kaCfgPath := "/kic/kubeadm.conf"
+
 		// copy the config to the node
-		if err := node.WriteFile(kaCfgPath, kCfg, "644"); err != nil {
+		if err := node.WriteFile(nodeRunner, kaCfgPath, kCfg, "644"); err != nil {
 			klog.Errorf("failed to copy kubeadm config to node : %v", err)
 		}
 
-		kube.RunKubeadmInit(node, kaCfgPath, *hostIP, hostPort, *profile)
-		kube.RunTaint(node)
-		kube.InstallCNI(node, "10.244.0.0/16")
-		c, _ := kube.GenerateKubeConfig(node, *hostIP, hostPort, *profile) // generates from the /etc/ inside container
+		kube.RunKubeadmInit(nodeRunner, kaCfgPath, *hostIP, hostPort, *profile)
+		kube.RunTaint(nodeRunner)
+		kube.InstallOverlayNetwork(nodeRunner, "10.244.0.0/16")
+		c, _ := kube.GenerateKubeConfig(nodeRunner, *hostIP, hostPort, *profile) // generates from the /etc/ inside container
 		// kubeconfig for end-user
 		kube.WriteKubeConfig(c, *profile)
 
 	}
 
+	if *delete {
+		fmt.Printf("Deleting ... %s\n", *profile)
+		ns.Delete(localRunner)
+
+	}
+
 }
 
-func newNodeSpec(profile string, imgSHA string, hostIP string, hostPort int32) *node.Spec {
-	return &node.Spec{
-		Profile:           profile,
-		Name:              profile + "control-plane",
-		Image:             imgSHA,
-		Role:              "control-plane",
-		ExtraMounts:       []cri.Mount{},
-		ExtraPortMappings: []cri.PortMapping{},
-		APIServerAddress:  hostIP,
-		APIServerPort:     hostPort,
-		IPv6:              false,
+// returns a free port on the system
+func freePort() int32 {
+	p, err := freeport.GetFreePort()
+	hostPort := int32(p)
+	if err != nil {
+		klog.Fatal(err)
 	}
+	return hostPort
 }
